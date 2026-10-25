@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: echoes-of-betrayal
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+
