@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 const port = 32123;
 const server = spawn(process.execPath, [fileURLToPath(new URL('../server.js', import.meta.url))], { env: { ...process.env, PORT: String(port) }, stdio: 'ignore' });
 process.once('exit', () => { if (server.exitCode === null) server.kill(); });
@@ -14,6 +15,64 @@ assert.match(appSource, /Choose your entry point/);
 assert.match(appSource, /data-form="create-room"/);
 assert.match(appSource, /data-form="join-room"/);
 assert.match(appSource, /placeholder="HY36B"/);
+
+function makeClientHarness(source) {
+  const values = new Map(), listeners = {}, sockets = [];
+  const elements = {
+    '#app': { innerHTML: '', querySelectorAll: () => [] },
+    '#connection': { textContent: '' },
+    '#toast': { textContent: '', classList: { add() {}, remove() {} } },
+    '#player-name': { value: '' },
+    '#join-code': { value: '' }
+  };
+  class BrowserSocket {
+    static OPEN = 1; static CLOSING = 2;
+    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    send(value) { this.sent.push(JSON.parse(value)); }
+    open() { this.readyState = BrowserSocket.OPEN; this.onopen?.(); }
+    message(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
+    close() { this.readyState = 3; this.onclose?.(); }
+  }
+  let timerId = 0;
+  const document = { querySelector: selector => elements[selector] || null, addEventListener: (type, handler) => { listeners[type] = handler; } };
+  const localStorage = { getItem: key => values.has(key) ? values.get(key) : null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) };
+  runInNewContext(source, { document, localStorage, WebSocket: BrowserSocket, location: { protocol: 'https:', host: 'game.test' }, setTimeout: () => ++timerId, clearTimeout() {}, setInterval: () => 0 });
+  return { values, listeners, sockets, elements };
+}
+
+const client = makeClientHarness(appSource);
+client.values.set('echo-room', 'ZV88J');
+client.values.set('echo-token', 'saved-secret-token');
+client.elements['#player-name'].value = 'ReconnectTest1';
+client.elements['#join-code'].value = 'ZV88J';
+client.listeners.submit({ target: { dataset: { form: 'join-room' } }, preventDefault() {} });
+assert.equal(client.sockets.length, 1, 'submitting Join Room should open a WebSocket');
+client.sockets[0].open();
+const resumeRequest = client.sockets[0].sent[0];
+assert.equal(resumeRequest.type, 'reconnect', 'same-room Join Room submit sends reconnect');
+assert.equal(resumeRequest.code, 'ZV88J');
+assert.equal(resumeRequest.token, 'saved-secret-token');
+client.sockets[0].message({ type: 'error', code: 'ROOM_UNAVAILABLE', message: 'Room unavailable.' });
+assert.equal(client.values.get('echo-room'), 'ZV88J', 'ambiguous reconnect failure preserves the saved room code');
+assert.equal(client.values.get('echo-token'), 'saved-secret-token', 'ambiguous reconnect failure preserves the saved token');
+client.listeners.submit({ target: { dataset: { form: 'join-room' } }, preventDefault() {} });
+client.sockets[1].open();
+assert.equal(client.sockets[1].sent[0].type, 'reconnect', 'retry reuses the saved session token');
+client.sockets[1].message({ type: 'error', code: 'SESSION_INVALID', message: 'Saved session token is invalid.' });
+assert.equal(client.values.has('echo-room'), false, 'explicit invalid-token response clears the stale room code');
+assert.equal(client.values.has('echo-token'), false, 'explicit invalid-token response clears the invalid token');
+client.values.set('echo-room', 'OLD22');
+client.values.set('echo-token', 'old-session-token');
+client.elements['#player-name'].value = 'FreshCaptain';
+client.listeners.submit({ target: { dataset: { form: 'create-room' } }, preventDefault() {} });
+client.sockets[2].open();
+assert.equal(client.sockets[2].sent[0].type, 'create', 'creating a genuinely new room uses create, not reconnect');
+assert.equal(client.values.get('echo-token'), 'old-session-token', 'old credentials remain until the new room is accepted');
+client.sockets[2].message({ type: 'private', id: 'fresh-player', token: 'fresh-token', role: null, clue: null });
+client.sockets[2].message({ type: 'state', room: { code: 'AB234', phase: 'lobby', hostId: 'fresh-player', players: [{ id: 'fresh-player', name: 'FreshCaptain', connected: true }], frequencies: [null, null, null], evidence: [], theories: [], tampered: false, result: null } });
+assert.equal(client.values.get('echo-room'), 'AB234', 'accepted new room replaces the old saved room code');
+assert.equal(client.values.get('echo-token'), 'fresh-token', 'accepted new room replaces the old saved token');
+console.log('PASS: real Join Room handler resumes with saved token; ambiguous errors preserve it; explicit invalid-token errors clear it; new rooms replace credentials on success.');
 const base = 'ws://127.0.0.1:' + port + '/ws';
 const sockets = [];
 function connect() {
@@ -54,6 +113,9 @@ try {
   send(crew[1], 'join', { code: missingCode, name: 'Orion' });
   const unknownCode = await take(crew[1], 'error');
   assert.match(unknownCode.message, /room code not found/i);
+  send(crew[1], 'reconnect', { code: missingCode, token: 'saved-token' });
+  const unavailable = await take(crew[1], 'error');
+  assert.equal(unavailable.code, 'ROOM_UNAVAILABLE', 'missing room is ambiguous; it must not be marked as a permanently invalid token');
   assert.equal((await (await fetch('http://127.0.0.1:' + port + '/health')).json()).rooms, roomsBeforeInvalidJoin, 'invalid joins must not create rooms');
   send(crew[1], 'join', { code, name: 'Orion' });
   const firstAuth = await take(crew[1], 'private', m => !!m.token);

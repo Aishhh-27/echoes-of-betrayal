@@ -8,12 +8,14 @@ function showEntryError(message){entryError=message;note(message);if(!room)rende
 function failConnection(socket,message){if(socket!==ws)return;clearTimeout(connectionTimer);connecting=false;hasSession=false;setConn('LINK UNAVAILABLE');showEntryError(message);if(socket.readyState<WebSocket.CLOSING)socket.close()}
 function connect(action){
   if(connecting)return;
-  const resuming=action==='resume';
+  const stored=action==='join'?saved():null;
+  // A saved token for this room recovers the existing seat instead of joining by callsign.
+  const resuming=action==='resume'||Boolean(stored?.code&&stored?.token&&stored.code.toUpperCase()===String($('#join-code')?.value||code).trim().toUpperCase());
   const playerName=String($('#player-name')?.value||name).trim();
   const roomCode=String($('#join-code')?.value||code).trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5);
   if(!resuming&&!playerName)return showEntryError('Enter a callsign before connecting.');
   if(action==='join'&&!/^[A-HJ-NP-Z2-9]{5}$/.test(roomCode))return showEntryError('Enter a valid five-character room code using the letters A–H, J–N, P–Z and digits 2–9.');
-  if(!resuming){shouldReconnect=true;hasSession=false;privateInfo=null;me=null;localStorage.removeItem('echo-room');localStorage.removeItem('echo-token');name=playerName;code=roomCode;entryError='';}
+  if(!resuming){shouldReconnect=true;hasSession=false;privateInfo=null;me=null;name=playerName;code=roomCode;entryError='';}
   connecting=true;setConn(resuming?'RESTORING ROOM…':action==='join'?'JOINING ROOM…':'CREATING ROOM…');
   app.querySelectorAll('[data-connect]').forEach(button=>button.disabled=true);
   const scheme=location.protocol==='https:'?'wss:':'ws:';
@@ -38,7 +40,8 @@ function connect(action){
     else if(m.type==='error'){
       if(connecting&&!hasSession){
         clearTimeout(connectionTimer);connecting=false;hasSession=false;
-        if(resuming){localStorage.removeItem('echo-room');localStorage.removeItem('echo-token');room=null;privateInfo=null;me=null;showEntryError('Your saved room session expired. Enter a room code to rejoin, or create a new room.');}
+        if(resuming&&m.code==='SESSION_INVALID'){localStorage.removeItem('echo-room');localStorage.removeItem('echo-token');room=null;privateInfo=null;me=null;showEntryError('Your saved session token is invalid. Enter a room code to join again, or create a new room.');}
+        else if(resuming)showEntryError('Could not restore your saved session. Your credentials were kept; check the room status and try again.');
         else showEntryError(m.message||'The room could not be joined. Check the room code and try again.');
         if(socket.readyState<WebSocket.CLOSING)socket.close();
       }else note(m.message);
