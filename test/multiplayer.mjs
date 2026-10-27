@@ -9,6 +9,11 @@ while (!health && Date.now() < deadline) { try { const response = await fetch('h
 assert.equal(health?.status, 'ok');
 const pageResponse = await fetch('http://127.0.0.1:' + port + '/'); assert.equal(pageResponse.status, 200); assert.match(await pageResponse.text(), /Echoes of Betrayal/);
 for (const asset of ['/styles.css', '/app.js']) assert.equal((await fetch('http://127.0.0.1:' + port + asset)).status, 200);
+const appSource = await (await fetch('http://127.0.0.1:' + port + '/app.js')).text();
+assert.match(appSource, /Choose your entry point/);
+assert.match(appSource, /data-form="create-room"/);
+assert.match(appSource, /data-form="join-room"/);
+assert.match(appSource, /placeholder="HY36B"/);
 const base = 'ws://127.0.0.1:' + port + '/ws';
 const sockets = [];
 function connect() {
@@ -41,11 +46,24 @@ try {
   const code = created.room.code;
   assert.match(code, /^[A-HJ-NP-Z2-9]{5}$/);
   const hostAuth = await take(crew[0], 'private', m => !!m.token);
+  const roomsBeforeInvalidJoin = (await (await fetch('http://127.0.0.1:' + port + '/health')).json()).rooms;
+  send(crew[1], 'join', { code: 'BAD!!', name: 'Orion' });
+  const malformedCode = await take(crew[1], 'error');
+  assert.match(malformedCode.message, /invalid room code/i);
+  const missingCode = code === 'AAAAA' ? 'BBBBB' : 'AAAAA';
+  send(crew[1], 'join', { code: missingCode, name: 'Orion' });
+  const unknownCode = await take(crew[1], 'error');
+  assert.match(unknownCode.message, /room code not found/i);
+  assert.equal((await (await fetch('http://127.0.0.1:' + port + '/health')).json()).rooms, roomsBeforeInvalidJoin, 'invalid joins must not create rooms');
   send(crew[1], 'join', { code, name: 'Orion' });
   const firstAuth = await take(crew[1], 'private', m => !!m.token);
+  const firstJoinedRoom = await latestRoom(crew[1], r => r.code === code && r.players.length === 2);
+  assert.deepEqual(firstJoinedRoom.room.players.map(p => p.name), ['Captain', 'Orion']);
   send(crew[0], 'start', { code, token: hostAuth.token });
   const premature = await take(crew[0], 'error');
-  assert.match(premature.message, /three/i);
+  assert.match(premature.message, /at least three crew/i);
+  const stillWaiting = await latestRoom(crew[0], r => r.phase === 'lobby' && r.players.length === 2);
+  assert.equal(stillWaiting.room.code, code);
   send(crew[2], 'join', { code, name: 'Nova' });
   const secondAuth = await take(crew[2], 'private', m => !!m.token);
   const lobby = await latestRoom(crew[0], r => r.players.length === 3);
@@ -131,4 +149,3 @@ try {
   for (const ws of sockets) try { ws.close(); } catch {}
   server.kill();
 }
-
