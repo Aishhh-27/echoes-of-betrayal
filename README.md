@@ -1,44 +1,51 @@
 # Echoes of Betrayal
 
-A complete, no-login multiplayer deduction game for 3–8 players. One Node.js web service serves both the interface and the authoritative WebSocket game server.
+A no-login, real-time social deduction game for 3–8 players. A single Node.js application serves the responsive game and its authoritative WebSocket server.
 
-## Play flow
+## Public demo
 
-1. One player creates a room and shares its five-character code.
-2. Three to eight crew members join with callsigns.
-3. Each player privately receives their role and a signal fragment. Three different players use their fragments to tune the Echo System.
-4. The crew investigates the shared evidence. The Saboteur can alter one evidence card once.
-5. Crew members post theories, then cast secret votes. Ballots are not exposed until the final reveal.
+Play at [https://echoes-of-betrayal.onrender.com](https://echoes-of-betrayal.onrender.com). Players do not need accounts.
 
-The server assigns roles, retains role and clue data, validates each action and only sends private briefings to their owner. Room state is intentionally kept in memory; a service restart ends any active rooms. Reconnecting players can recover a session with their local session token, and a connected player becomes captain if the captain disconnects.
+## How to play
+
+1. A captain creates a room and shares its five-character code.
+2. Crew join with callsigns. The captain can launch only when at least **three players are connected**; up to eight players may join.
+3. Each player receives a private role and clue. Three different players use their clues to tune the Echo System.
+4. The crew investigates shared evidence. The saboteur can alter one evidence card once.
+5. Players discuss theories and vote secretly. Results appear after every eligible connected player votes, or an uncast ballot becomes an abstention if its player disconnects.
+
+The server assigns roles, keeps private clues server-side, and validates game actions. Reconnecting with the saved browser session token restores the same player and role. A connected crew member becomes captain if the captain disconnects.
+
+## Room and reconnect policy
+
+Room state is held in server memory. A room remains available while any player is connected. After the last player disconnects, the room and its reconnect credentials are retained for `ROOM_RECONNECT_GRACE_MS` (five minutes by default). Reconnecting during that window restores the room and restarts the grace period. When the full grace period passes with no connected players, the server expires the room; later reconnect attempts receive a room-unavailable message. Returning to entry only disconnects that player and does not end a game for connected crew.
+
+**Known limitation:** a server restart clears all in-memory rooms immediately, regardless of the reconnect grace period. The service may restart or sleep as part of hosting, so a live session can be lost.
 
 ## Run locally
 
-Requires Node.js 22 or newer.
+Requires Node.js 22 or newer. There are no external runtime packages to install.
 
-```powershell
+```sh
 node server.js
 ```
 
-Open `http://localhost:3000`. For the development runtime included in this workspace:
+Open [http://localhost:3000](http://localhost:3000). The captain must have at least three connected players before launching.
 
-```powershell
-.\work\runtime\node-v24.22.1-win-x64\node.exe server.js
-```
+## Tests
 
-## Automated multiplayer test
+Run the repeatable integration suite, which starts a disposable local server and connects independent WebSocket clients:
 
-The repeatable integration test starts a disposable server and uses independent WebSocket clients:
-
-```powershell
+```sh
 node test/multiplayer.mjs
+node --check server.js
+node --check public/app.js
+git diff --check
 ```
 
-It covers the 3-player start gate, private role delivery, puzzle completion from private fragments, role-based evidence tampering and its one-use limit, discussion notes, secret voting and final reveal, 8-player capacity, reconnecting, and captain handoff.
+The suite covers the three-connected-player launch gate, private roles, cooperative relay puzzle and ownership, evidence manipulation, discussion, secret voting and reveal, room capacity, reconnect and captain handoff, and abandoned-room expiration.
 
-## Deployment
+## Hosting
 
-`render.yaml` configures one Render web service on the free plan. It serves the site and WebSockets from the same Node process. Render supports inbound WebSockets, but free instances can spin down after 15 minutes without traffic, can restart, and have ephemeral filesystems; active rooms can be lost on restart. The client sends a keepalive while connected.
-
-To deploy, connect a Git provider and Render account, push this project to a repository, then create a Render Blueprint from that repository and select the free plan. The project has not been deployed yet because those provider connections are not available in this workspace.
+The public demo is hosted on Render using the single web service configured in `render.yaml`. The application serves both the site and persistent WebSocket connections from the same Node process. The client sends keepalives while connected. Render free instances may sleep or restart; because rooms are in memory, a restart loses active rooms.
 
